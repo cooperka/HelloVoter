@@ -4,7 +4,12 @@ Our Voice USA is a 501(c)(3) non-profit, non-partisan organization for civic edu
 
 ## Development Setup
 
-Docker is required to get the database running, so make sure you have that installed on your system.
+### Prerequisites
+
+- Node. We recommend installing via [Node Version Manager](https://github.com/nvm-sh/nvm#installing-and-updating).
+- [Docker](https://docs.docker.com/desktop/) is required to get the database running.
+
+### Setup
 
 To get set up locally, simply run the following commands:
 
