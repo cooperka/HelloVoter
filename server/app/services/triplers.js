@@ -282,6 +282,7 @@ async function upgradeNotification(triplerId) {
   }
 }
 
+// useful for QA purposes
 async function adminSearchTriplers(req) {
   let query = {};
 
@@ -324,42 +325,18 @@ function buildSearchTriplerQuery(query) {
   return neo4jquery
 }
 
-async function searchTriplersAmbassador(query) {
-  let neo4jquery = buildSearchTriplerQuery(query);
-  let collection = await neode
-    .query()
-    .match("t", "Tripler")
-    .whereRaw(neo4jquery)
-    .whereRaw("NOT ()-[:CLAIMS]->(t)")
-    .whereRaw("NOT ()-[:WAS_ONCE]->(t)")
-    .return("t")
-    .limit(ov_config.suggest_tripler_limit)
-    .execute();
-
-  let models = [];
-
-  for (var index = 0; index < collection.records.length; index++) {
-    let entry = collection.records[index]._fields[0].properties;
-    models.push(serializeNeo4JTripler(entry));
-  }
-
-  return models;
-}
-
-//
-// searchTriplersAdmin
-//
 // searching as admin removes constraint of requiring no claims relationship
 // as well as removing constraint of requiring no upgraded status
-//
-async function searchTriplersAdmin(query) {
+async function searchTriplers(query, isAdmin) {
   let neo4jquery = buildSearchTriplerQuery(query);
   let collection = await neode
     .query()
     .match("t", "Tripler")
     .whereRaw(neo4jquery)
+    .whereRaw(isAdmin ? "" : "NOT ()-[:CLAIMS]->(t)")
+    .whereRaw(isAdmin ? "" : "NOT ()-[:WAS_ONCE]->(t)")
     .return("t")
-    .limit(1000)
+    .limit(ov_config.suggest_tripler_limit)
     .execute();
 
   let models = [];
@@ -446,8 +423,7 @@ module.exports = {
   detachTripler: detachTripler,
   reconfirmTripler: reconfirmTripler,
   findRecentlyConfirmedTriplers: findRecentlyConfirmedTriplers,
-  searchTriplersAmbassador: searchTriplersAmbassador,
-  searchTriplersAdmin: searchTriplersAdmin,
+  searchTriplers: searchTriplers,
   adminSearchTriplers: adminSearchTriplers,
   startTriplerConfirmation: startTriplerConfirmation,
   updateTriplerCarrier: updateTriplerCarrier
