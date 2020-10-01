@@ -5,7 +5,7 @@ import caller_id from "../lib/caller_id";
 import reverse_phone from "../lib/reverse_phone";
 import neo4j from "neo4j-driver";
 import neode from "../lib/neode";
-import { serializeName } from "../lib/utils";
+import { ageGroupMap, serializeName } from "../lib/utils";
 import { normalize } from "../lib/phone";
 import mail from "../lib/mail";
 import { ov_config } from "../lib/ov_config";
@@ -17,6 +17,11 @@ import {
   serializeTriplee,
   serializeTripleeForCSV,
 } from "../routes/api/v1/va/serializers";
+
+// The higher this number, the broader the search results.
+// This number should NOT be exactly `1` which would reveal the age of users on a boundary,
+// but `0` is okay to make it an exact range.
+const AGE_RANGE_FUZZY = 3
 
 async function findById(triplerId) {
   return await neode.first("Tripler", "id", triplerId);
@@ -306,7 +311,7 @@ async function adminSearchTriplers(req) {
 }
 
 function fuzzyMatchQuery(string, field) {
-  if (!string) return "";
+  if (!string) return "TRUE";
 
   const normalStr = string.trim().toLowerCase()
   return `apoc.text.levenshteinDistance("${normalStr}", ${field}) < 3.0`;
@@ -315,19 +320,26 @@ function fuzzyMatchQuery(string, field) {
 // searching as admin removes constraint of requiring no claims relationship
 // as well as removing constraint of requiring no upgraded status
 async function searchTriplers(query, isAdmin) {
-  const { firstName, lastName } = query;
+  const { firstName, lastName, city, ageGroup } = query;
+  const ageRange = ageGroupMap[ageGroup];
 
-  if (!firstName && !lastName) {
+  // They need to search for SOMETHING valid.
+  if (!firstName && !lastName && !city && !ageRange) {
     return [];
   }
 
+  // TODO: Neode makes it quite painful to do conditional queries, and also insecure.
+  //  We should fork it and improve this logic, and use parameter isolation.
   let collection = await neode
     .query()
     .match("t", "Tripler")
+    .where(ageRange ? `t.age >= ${ageRange.min - AGE_RANGE_FUZZY}` : "TRUE")
+    .where(ageRange ? `t.age <= ${ageRange.max + AGE_RANGE_FUZZY}` : "TRUE")
     .whereRaw(fuzzyMatchQuery(firstName, "t.first_name"))
     .whereRaw(fuzzyMatchQuery(lastName, "t.last_name"))
-    .whereRaw(isAdmin ? "" : "NOT ()-[:CLAIMS]->(t)")
-    .whereRaw(isAdmin ? "" : "NOT ()-[:WAS_ONCE]->(t)")
+    .whereRaw(city ? `apoc.convert.fromJsonMap(t.address).city = "${city}"` : "TRUE")
+    .whereRaw(isAdmin ? "TRUE" : "NOT ()-[:CLAIMS]->(t)")
+    .whereRaw(isAdmin ? "TRUE" : "NOT ()-[:WAS_ONCE]->(t)")
     .return("t")
     .limit(ov_config.suggest_tripler_limit)
     .execute();

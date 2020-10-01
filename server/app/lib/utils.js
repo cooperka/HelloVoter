@@ -7,6 +7,18 @@ import { ov_config } from './ov_config';
 
 export var min_neo4j_version = 3.5;
 
+// Fuzzy mapping from age group key like "b" to age range like 18-30 year olds.
+// Broad ranges like this help protect the privacy of our users.
+// If this changes, the frontend also needs to know about it.
+export const ageGroupMap = {
+  a: { min: 0, max: 18 },
+  b: { min: 18, max: 30 },
+  c: { min: 31, max: 40 },
+  d: { min: 41, max: 50 },
+  e: { min: 51, max: 60 },
+  f: { min: 61, max: 200 },
+}
+
 export function serializeName(first_name, last_name) {
   if (!last_name) return first_name;
   return [first_name, last_name].join(" ");
