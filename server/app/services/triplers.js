@@ -328,6 +328,12 @@ function buildSearchTriplerQuery(query) {
 // searching as admin removes constraint of requiring no claims relationship
 // as well as removing constraint of requiring no upgraded status
 async function searchTriplers(query, isAdmin) {
+  const { firstName, lastName } = query;
+
+  if (!firstName && !lastName) {
+    return [];
+  }
+
   let neo4jquery = buildSearchTriplerQuery(query);
   let collection = await neode
     .query()

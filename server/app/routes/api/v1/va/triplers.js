@@ -85,9 +85,6 @@ async function adminSearchTriplers(req, res) {
 }
 
 async function searchTriplers(req, res, isAdmin) {
-  if (!req.query.firstName && !req.query.lastName) {
-    return res.json([]);
-  }
   let models = await triplersSvc.searchTriplers(req.query, isAdmin)
   return res.json(models);
 }
