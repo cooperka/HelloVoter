@@ -84,6 +84,7 @@ async function parseRecord(record, argv) {
     voter_id: record[0],
     first_name: record[3],
     last_name: record[4],
+    age: record[13],
     address: JSON.stringify({
       address1: parseAddress(record),
       city: record[10],
@@ -160,7 +161,7 @@ async function parseCsv(argv) {
       } catch (err) {
         console.log('error parsing: ', err);
       }
-    }    
+    }
 
     bar1.increment();
   }
