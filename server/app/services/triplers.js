@@ -305,24 +305,11 @@ async function adminSearchTriplers(req) {
   return models;
 }
 
-function buildSearchTriplerQuery(query) {
-  let neo4jquery = "";
-  if (query.firstName) {
-    neo4jquery += ` apoc.text.levenshteinDistance("${query.firstName
-      .trim()
-      .toLowerCase()}", t.first_name) < 3.0`;
-  }
+function fuzzyMatchQuery(string, field) {
+  if (!string) return "";
 
-  if (query.lastName) {
-    if (query.firstName) {
-      neo4jquery += " AND";
-    }
-    neo4jquery += ` apoc.text.levenshteinDistance("${query.lastName
-      .trim()
-      .toLowerCase()}", t.last_name) < 3.0`;
-  }
-
-  return neo4jquery
+  const normalStr = string.trim().toLowerCase()
+  return `apoc.text.levenshteinDistance("${normalStr}", ${field}) < 3.0`;
 }
 
 // searching as admin removes constraint of requiring no claims relationship
@@ -334,11 +321,11 @@ async function searchTriplers(query, isAdmin) {
     return [];
   }
 
-  let neo4jquery = buildSearchTriplerQuery(query);
   let collection = await neode
     .query()
     .match("t", "Tripler")
-    .whereRaw(neo4jquery)
+    .whereRaw(fuzzyMatchQuery(firstName, "t.first_name"))
+    .whereRaw(fuzzyMatchQuery(lastName, "t.last_name"))
     .whereRaw(isAdmin ? "" : "NOT ()-[:CLAIMS]->(t)")
     .whereRaw(isAdmin ? "" : "NOT ()-[:WAS_ONCE]->(t)")
     .return("t")
