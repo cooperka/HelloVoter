@@ -324,90 +324,90 @@ function buildSearchTriplerQuery(query) {
   return neo4jquery
 }
 
+function normalizeName(name) {
+  return (name || "").replace(/-'/g, "").toLowerCase();
+}
+
+function buildTriplerSearchQuery(req) {
+  const { firstName, lastName, phone, distance, age, gender, msa } = req.query;
+
+  const { zip } = JSON.parse(req.user.get('address'));
+  const zipFilter = `node.zip starts with left("${zip}", 3)`;
+
+  const firstNameNorm = normalizeName(firstName);
+  const lastNameNorm = normalizeName(lastName);
+  let triplerQuery, nameType, nameToCompare;
+  if (firstNameNorm && lastNameNorm) {
+    triplerQuery = `CALL db.index.fulltext.queryNodes("triplerFullNameIndex", "*${firstNameNorm}* *${lastNameNorm}*") YIELD node`;
+    nameType = 'full';
+    nameToCompare = `first_n_q + ' ' + last_n_q`;
+  } else if (firstNameNorm) {
+    triplerQuery = `CALL db.index.fulltext.queryNodes("triplerFirstNameIndex", "*${firstNameNorm}*") YIELD node`;
+    nameType = 'first';
+    nameToCompare = `first_n_q`;
+  } else if (lastNameNorm) {
+    triplerQuery = `CALL db.index.fulltext.queryNodes("triplerLastNameIndex", "*${lastNameNorm}*") YIELD node`;
+    nameType = 'last';
+    nameToCompare = `last_n_q`;
+  } else {
+    // Limit to triplers in the ambassador's broad area.
+    triplerQuery = `match (node:Tripler) where ${zipFilter}`;
+  }
+  const nodeName = `replace(replace(toLower(node.${nameType}_name), '-', ''), "'", '')`;
+  const stringDistScores = firstName || lastName ? `
+    apoc.text.levenshteinSimilarity(${nodeName}, ${nameToCompare}) as score1,
+    apoc.text.jaroWinklerDistance(${nodeName}, ${nameToCompare}) as score2,
+    apoc.text.sorensenDiceSimilarity(${nodeName}, ${nameToCompare}) as score3
+  ` : `
+    0 as score1, 0 as score2, 0 as score3
+  `;
+
+  const phoneFilter = phone ? `and node.phone in ["${normalizePhone(phone)}"]` : '';
+  const genderFilter = gender ? `and node.gender in ["${gender}", "U"]` : '';
+  const ageFilter = age ? `and node.age_decade in ["${age}"]` : '';
+  const msaFilter = msa ? `and node.msa in ["${msa}"]` : '';
+  // This will have already been included above if there's no name specified.
+  const secondZipFilter = firstName || lastName ? `and ${zipFilter}` : '';
+
+  // 0 means "Doesn't matter".
+  const distanceValue = distance == null ? 0 : parseFloat(distance);
+
+  const optionalZip = phoneFilter + genderFilter + ageFilter + msaFilter + secondZipFilter === '' && (!firstNameNorm || !lastNameNorm) ? ` and node.zip starts with left(toString(address.zip), 3)` : '';
+
+  // TODO: Use parameter isolation for security.
+  return `
+
+    match (a:Ambassador {id: "${req.user.get('id')}"})
+    with a.location as a_location, apoc.convert.fromJsonMap(a.address) as address
+    ${triplerQuery}
+      where
+        not ()-[:CLAIMS]->(node)
+        and not ()-[:WAS_ONCE]->(node)
+        ${optionalZip}
+        ${phoneFilter}
+        ${genderFilter}
+        ${ageFilter}
+        ${msaFilter}
+        ${secondZipFilter}
+      with a_location, node, ${firstNameNorm ? `"${firstNameNorm}"` : null} as first_n_q, ${lastNameNorm ? `"${lastNameNorm}"` : null} as last_n_q
+      with a_location, node, first_n_q, last_n_q,
+        ${stringDistScores}
+      with
+        node, (score1 + score2 + score3) / 3 as avg_score,
+        distance(a_location, node.location) / 10000 as distance
+      with
+        node, avg_score + (1 / distance) * ${distanceValue} as final_score
+      return node, final_score
+      order by final_score desc, node.last_name asc, node.first_name asc
+      limit 100
+  `;
+}
+
 async function searchTriplersAmbassador(req) {
-
-  /*
-  let neo4jquery = buildSearchTriplerQuery(req.query);
-  let exclude_except = '';
-  if (ov_config.exclude_unreg_except_in) {
-    exclude_except += ov_config.exclude_unreg_except_in.split(",").map((state) => {
-      return `AND NOT t.address CONTAINS '\"state\": \"${state}\"' `
-    }).join(' ')
-  }
-  let q = await neode
-    .query()
-    .match("a", "Ambassador")
-    .where("a.id", req.user.get("id"))
-    .whereRaw("NOT ()-[:CLAIMS]->(t)")
-    .whereRaw("NOT ()-[:WAS_ONCE]->(t)")
-    // .whereRaw(`NOT t.voter_id CONTAINS "Unreg" ${exclude_except}`)
-    .whereRaw(`distance(t.location, a.location) <= ${ov_config.search_tripler_max_distance}`) // distance in meters (see .env)
-    .with("a, t, distance(t.location, a.location) AS distance")
-    .orderBy("distance")
-    .return("t, distance")
-    .limit(ov_config.suggest_tripler_limit)
-    .build();
-
-  q.query = neo4jquery + q.query
-  q.query = q.query.replace('$where_a_id', '"' + req.user.get("id") + '"')
-
-  let collection = await neode.cypher(q.query);
-  */
-
-  let firstNameQuery = req.query.firstName;
-  let lastNameQuery = req.query.lastName;
-  let q = '';
-
-  if (req.query.firstName && req.query.lastName) {
-    q = `
-    match(a:Ambassador{id:"${req.user.get('id')}"})
-    with a.location as a_location, apoc.convert.fromJsonMap(a.address) as address
-    CALL db.index.fulltext.queryNodes("triplerFullNameIndex", "${'*' + firstNameQuery + '* *' + lastNameQuery + '*'}") YIELD node
-    where NOT ()-[:CLAIMS]->(node)
-    and NOT ()-[:WAS_ONCE]->(node)
-    and node.zip starts with left(toString(address.zip), 3)
-    with a_location, node, replace(replace(toLower("${firstNameQuery}"),'-',''),"'",'') as first_n_q, replace(replace(toLower("${lastNameQuery}"),'-',''),"'",'') as last_n_q
-    with a_location, first_n_q, last_n_q, node, apoc.text.levenshteinSimilarity(replace(replace(toLower(node.full_name),'-',''),"'",''), first_n_q + ' ' + last_n_q) as score1, apoc.text.jaroWinklerDistance(replace(replace(toLower(node.full_name),'-',''),"'",''), first_n_q + ' ' + last_n_q) as score2, apoc.text.sorensenDiceSimilarity(replace(replace(toLower(node.full_name),'-',''),"'",''), first_n_q + ' ' + last_n_q) as score3
-    with node, (score1 + score2 + score3) / 3 as avg_score, distance(a_location, node.location)/10000 as distance
-    with node, avg_score / distance as final_score
-    return node
-    order by final_score desc limit 100
-    `
-  } else if (req.query.firstName) {
-    q = `
-    match(a:Ambassador{id:"${req.user.get('id')}"})
-    with a.location as a_location, apoc.convert.fromJsonMap(a.address) as address
-    CALL db.index.fulltext.queryNodes("triplerFirstNameIndex", "${'*' + firstNameQuery.replace('-', ' ') + '*'}") YIELD node
-    where NOT ()-[:CLAIMS]->(node)
-    and NOT ()-[:WAS_ONCE]->(node)
-    and node.zip starts with left(toString(address.zip), 3)
-    with a_location, node, replace(replace(toLower("${firstNameQuery}"),'-',''),"'",'') as first_n_q
-    with a_location, first_n_q, node, apoc.text.levenshteinSimilarity(replace(replace(toLower(node.first_name),'-',''),"'",''), first_n_q) as score1, apoc.text.jaroWinklerDistance(replace(replace(toLower(node.first_name),'-',''),"'",''), first_n_q) as score2, apoc.text.sorensenDiceSimilarity(replace(replace(toLower(node.first_name),'-',''),"'",''), first_n_q) as score3
-    with node, (score1 + score2 + score3) / 3 as avg_score, distance(a_location, node.location)/10000 as distance
-    with node, avg_score / distance as final_score
-    return node
-    order by final_score desc, node.last_name limit 100
-    `;
-  } else if (req.query.lastName) {
-    q = `
-    match(a:Ambassador{id:"${req.user.get('id')}"})
-    with a.location as a_location, apoc.convert.fromJsonMap(a.address) as address
-    CALL db.index.fulltext.queryNodes("triplerLastNameIndex", "${'*' + lastNameQuery.replace('-', ' ') + '*'}") YIELD node
-    where NOT ()-[:CLAIMS]->(node)
-    and NOT ()-[:WAS_ONCE]->(node)
-    and node.zip starts with left(toString(address.zip), 3)
-    with a_location, node, replace(replace(toLower("${lastNameQuery}"),'-',''),"'",'') as last_n_q
-    with a_location, last_n_q, node, apoc.text.levenshteinSimilarity(replace(replace(toLower(node.last_name),'-',''),"'",''), last_n_q) as score1, apoc.text.jaroWinklerDistance(replace(replace(toLower(node.last_name),'-',''),"'",''), last_n_q) as score2, apoc.text.sorensenDiceSimilarity(replace(replace(toLower(node.last_name),'-',''),"'",''), last_n_q) as score3
-    with node, (score1 + score2 + score3) / 3 as avg_score, distance(a_location, node.location)/10000 as distance
-    with node, avg_score / distance as final_score
-    return node
-    order by final_score desc, node.first_name limit 100
-    `;
-  }
-
-  let collection = await neode.cypher(q);
+  const query = buildTriplerSearchQuery(req);
+  let collection = await neode.cypher(query);
   let models = [];
-  for (var index = 0; index < collection.records.length; index++) {
+  for (let index = 0; index < collection.records.length; index++) {
     let entry = collection.records[index]._fields[0].properties;
     models.push(serializeNeo4JTripler(entry));
   }
@@ -422,6 +422,11 @@ async function searchTriplersAmbassador(req) {
 // as well as removing constraint of requiring no upgraded status
 //
 async function searchTriplersAdmin(req) {
+  const { firstName, lastName } = req.query;
+  if (!firstName && !lastName) {
+    return [];
+  }
+
   let neo4jquery = buildSearchTriplerQuery(req.query);
   let q = await neode
     .query()
@@ -496,6 +501,7 @@ module.exports = {
   detachTripler: detachTripler,
   reconfirmTripler: reconfirmTripler,
   findRecentlyConfirmedTriplers: findRecentlyConfirmedTriplers,
+  buildTriplerSearchQuery: buildTriplerSearchQuery,
   searchTriplersAmbassador: searchTriplersAmbassador,
   searchTriplersAdmin: searchTriplersAdmin,
   adminSearchTriplers: adminSearchTriplers,

@@ -23,3 +23,62 @@ export function validatePhone(phone) {
 export function validateEmail(email) {
   return EmailValidator.validate(email);
 }
+
+export async function validateUniquePhone(modelName, phone, existingId = null) {
+  return validateUnique(modelName, { phone: normalizePhone(phone) }, existingId);
+}
+
+/**
+ * Returns true if a node with these properties does not yet exist,
+ * or if it only matches the given ID (useful when updating an existing node).
+ */
+export async function validateUnique(modelName, properties, existingId = null) {
+  if (!ENFORCE_UNIQUE) {
+    return true;
+  }
+  const all = await neode.all(modelName, properties);
+  if (all.length === 0) return true;
+  if (all.length > 1) return false;
+  // Exactly one match, return false unless it's existingId.
+  return all.first().get('id') === existingId;
+}
+
+export function validateState(state) {
+  return ALLOWED_STATES.indexOf(state) >= 0;
+}
+
+export async function validateCarrier(phone) {
+  return await carrier(normalizePhone(phone));
+}
+
+/** Check against Twilio caller ID and Ekata data. */
+export async function verifyCallerIdAndReversePhone(phone) {
+  const verifications = [];
+
+  let twilioCallerId = await caller_id(phone);
+  if (twilioCallerId) {
+    try {
+      verifications.push({
+        source: 'Twilio',
+        name: twilioCallerId
+      })
+    } catch (err) {
+      logger.error("Could not get verification info for ambassador: %s", err);
+    }
+  }
+
+  let ekataReversePhone = await reverse_phone(phone);
+  if (ekataReversePhone) {
+    try {
+      verifications.push({
+        source: 'Ekata',
+        name: ekataReversePhone.addOns.results.ekata_reverse_phone
+      })
+    } catch (err) {
+      logger.error("Could not get verification info for ambassador: %s", err);
+    }
+  }
+
+  return verifications;
+}
+
