@@ -3,17 +3,20 @@ import neo4j from 'neo4j-driver';
 import format from 'string-format';
 import { v4 as uuidv4 } from 'uuid';
 
-import { normalize } from '../../../../lib/phone';
+import { getValidCoordinates, normalizePhone } from '../../../../lib/normalizers';
 import { ValidationError } from '../../../../lib/errors';
 import ambassadorsSvc from '../../../../services/ambassadors';
 import { error } from '../../../../services/errors';
 
 import {
-  _204, _400, _401, _403, _404, geoCode
+  _204, _400, _401, _403, _404
 } from '../../../../lib/utils';
 
 import {
-  validateEmpty, validatePhone, validateEmail
+  validateEmpty,
+  validateCarrier,
+  verifyCallerIdAndReversePhone,
+  assertUserPhoneAndEmail
 } from '../../../../lib/validations';
 
 import mail from '../../../../lib/mail';
@@ -32,29 +35,12 @@ async function createAmbassador(req, res) {
       return error(400, res, "Invalid payload, ambassador cannot be created");
     }
 
-    if (!validatePhone(req.body.phone)) {
-      return error(400, res, "Our system doesn’t recognize that phone number. Please try again.");
-    }
-
-    if (req.models.Ambassador.phone.unique) {
-      let existing_ambassador = await req.neode.first('Ambassador', 'phone', normalize(req.body.phone));
-      if(existing_ambassador) {
-        return error(400, res, "That phone number is already in use. Cannot create ambassador.");
-      }
-    }
-
-    if (req.body.email) {
-      if (!validateEmail(req.body.email)) return error(400, res, "Invalid email");  
-
-      if (req.models.Ambassador.email.unique && 
-          await req.neode.first('Ambassador', 'email', req.body.email)) {
-        return error(400, res, "That email address is already in use. Cannot create ambassador.");
-      }
-    }
-
-    let coordinates = await geoCode(req.body.address);
-    if (coordinates === null) {
-      return error(400, res, "Our system doesn’t recognize that address. Please try again.");
+    let coordinates, address;
+    try {
+      await assertUserPhoneAndEmail('Ambassador', req.body.phone, req.body.email);
+      [coordinates, address] = await getValidCoordinates(req.body.address);
+    } catch (err) {
+      return error(400, res, err.message, req.body);
     }
 
     new_ambassador = await req.neode.create('Ambassador', {
@@ -63,15 +49,15 @@ async function createAmbassador(req, res) {
       last_name: req.body.last_name || null,
       phone: normalize(req.body.phone),
       email: req.body.email || null,
-      address: JSON.stringify(req.body.address, null, 2),
+      address: JSON.stringify(address, null, 2),
       quiz_results: JSON.stringify(req.body.quiz_results, null, 2) || null,
       approved: false,
       locked: false,
       signup_completed: false,
       onboarding_completed: false,
       location: {
-        latitude: parseFloat(coordinates.latitude, 10),
-        longitude: parseFloat(coordinates.longitude, 10)
+        latitude: parseFloat(coordinates.latitude),
+        longitude: parseFloat(coordinates.longitude)
       }
     })
   } catch(err) {
@@ -252,9 +238,8 @@ async function signup(req, res) {
   const verifications = await verifyCallerIdAndReversePhone(req.body.phone);
 
   try {
-    new_ambassador = await ambassadorsSvc.signup(req.body, verification, carrierLookup);
-  }
-  catch (err) {
+    new_ambassador = await ambassadorsSvc.signup(req.body, verifications, carrierLookup);
+  } catch (err) {
     if (err instanceof ValidationError) {
       return error(400, res, err.message, req.body);
     } else {
@@ -286,56 +271,17 @@ async function updateAmbassador(req, res) {
     return error(404, res, "Ambassador not found");
   }
 
-  if (req.body.phone) {
-    if (!validatePhone(req.body.phone)) {
-      return error(400, res, "Our system doesn’t recognize that phone number. Please try again.");
-    }
-
-    if (req.models.Ambassador.phone.unique) {
-      let existing_ambassador = await req.neode.first('Ambassador', 'phone', normalize(req.body.phone));
-      if(existing_ambassador && existing_ambassador.get('id') !== found.get('id')) {
-        return error(400, res, "That phone number is already in use. Cannot update ambassador.");
-      }
-    }
+  try {
+    await assertUserPhoneAndEmail('Ambassador', req.body.phone, req.body.email, found.get('id'));
+  } catch (err) {
+    return error(400, res, err.message, req.body);
   }
 
-  if (req.body.email) {
-    if (!validateEmail(req.body.email)) return error(400, res, "Invalid email");  
-
-    if (req.models.Ambassador.email.unique) {
-      let existing_ambassador = await req.neode.first('Ambassador', 'email', req.body.email);
-      if(existing_ambassador && existing_ambassador.get('id') !== found.get('id')) {
-        return error(400, res, "That email address is already in use. Cannot update ambassador.");
-      }
-    }
-  }
-
-  let whitelistedAttrs = ['first_name', 'last_name', 'date_of_birth', 'email'];
-
-  let json = {};
-  for (let prop in req.body) {
-    if (whitelistedAttrs.indexOf(prop) !== -1) {
-      json[prop] = req.body[prop];
-    }
-  }
-
-  if (req.body.phone) {
-    json.phone = normalize(req.body.phone);
-  }
-
-  if (req.body.address) {
-    let coordinates = await geoCode(req.body.address);
-    if (coordinates === null) {
-      return error(400, res, "Invalid address, ambassador cannot be updated");
-    }
-    json.address = JSON.stringify(req.body.address, null, 2);
-    json.location = new neo4j.types.Point(4326, // WGS 84 2D
-                                           parseFloat(coordinates.longitude, 10),
-                                           parseFloat(coordinates.latitude, 10));
-  }
-
-  if (req.body.quiz_results) {
-    json.quiz_results = JSON.stringify(res.body.quiz_results, null, 2);
+  let json;
+  try {
+    json = await getUserJsonFromRequest(req.body);
+  } catch (err) {
+    return error(400, res, err.message);
   }
   let updated = await found.update(json);
   return res.json(serializeAmbassador(updated));
@@ -344,56 +290,24 @@ async function updateAmbassador(req, res) {
 async function updateCurrentAmbassador(req, res) {
   let found = req.user;
 
-  if (req.body.phone) {
-    if (!validatePhone(req.body.phone)) {
-      return error(400, res, "Our system doesn’t recognize that phone number. Please try again.");
-    }
-
-    if (req.models.Ambassador.phone.unique) {
-      let existing_ambassador = await req.neode.first('Ambassador', 'phone', normalize(req.body.phone));
-      if(existing_ambassador && existing_ambassador.get('id') !== found.get('id')) {
-        return error(400, res, "That phone number is already in use. Cannot update current ambassador.");
-      }
-    }
+  // Disabled form fields don't get sent from the frontend, so default it if missing.
+  if (!req.body.phone) {
+    req.body.phone = req.user.get('phone');
+  } else if (req.user.get('phone') !== normalizePhone(req.body.phone)) {
+    return error(400, res, "You're not allowed to change your phone number. Email support@blockpower.vote for help. (E8)", req.body);
   }
 
-  if (req.body.email) {
-    if (!validateEmail(req.body.email)) return error(400, res, "Invalid email");  
-
-    if (req.models.Ambassador.email.unique) {
-      let existing_ambassador = await req.neode.first('Ambassador', 'email', req.body.email);
-      if(existing_ambassador && existing_ambassador.get('id') !== found.get('id')) {
-        return error(400, res, "That email address is already in use. Cannot update current ambassador.");
-      }
-    }
+  try {
+    await assertUserPhoneAndEmail('Ambassador', req.body.phone, req.body.email, found.get('id'));
+  } catch (err) {
+    return error(400, res, err.message, req.body);
   }
 
-  let whitelistedAttrs = ['first_name', 'last_name', 'date_of_birth', 'email'];
-
-  let json = {};
-  for (let prop in req.body) {
-    if (whitelistedAttrs.indexOf(prop) !== -1) {
-      json[prop] = req.body[prop];
-    }
-  }
-
-  if (req.body.phone) {
-    json.phone = normalize(req.body.phone);
-  }
-
-  if (req.body.address) {
-    let coordinates = await geoCode(req.body.address);
-    if (coordinates === null) {
-      return error(400, res, "Invalid address, ambassador cannot be updated");
-    }
-    json.address = JSON.stringify(req.body.address, null, 2);
-    json.location = new neo4j.types.Point(4326, // WGS 84 2D
-                                           parseFloat(coordinates.longitude, 10),
-                                           parseFloat(coordinates.latitude, 10));
-  }
-
-  if (req.body.quiz_results) {
-    json.quiz_results = JSON.stringify(req.body.quiz_results, null, 2);
+  let json;
+  try {
+    json = await getUserJsonFromRequest(req.body);
+  } catch (err) {
+    return error(400, res, err.message);
   }
   let updated = await found.update(json);
   return res.json(serializeAmbassador(updated));

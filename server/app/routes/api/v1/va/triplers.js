@@ -3,7 +3,7 @@ import neo4j from 'neo4j-driver';
 import stringFormat from 'string-format';
 import { v4 as uuidv4 } from 'uuid';
 
-import { normalize } from '../../../../lib/phone';
+import { getValidCoordinates, normalizePhone } from '../../../../lib/normalizers';
 import { ov_config } from '../../../../lib/ov_config';
 import caller_id from '../../../../lib/caller_id';
 import reverse_phone from '../../../../lib/reverse_phone';
@@ -15,7 +15,12 @@ import {
 } from '../../../../lib/utils';
 
 import {
-  validateEmpty, validatePhone, validateEmail
+  validateEmpty,
+  validatePhone,
+  validateUniquePhone,
+  verifyCallerIdAndReversePhone,
+  validateCarrier,
+  assertUserPhoneAndEmail
 } from '../../../../lib/validations';
 
 import { serializeAmbassador, serializeTripler, serializeNeo4JTripler, serializeTriplee } from './serializers';
@@ -31,30 +36,12 @@ async function createTripler(req, res) {
       return error(400, res, "Invalid payload, tripler cannot be created");
     }
 
-    if (!validatePhone(req.body.phone)) {
-      return error(400, res, "Our system doesn’t recognize that phone number. Cannot create tripler. Please try again.");
-    }
-
-    if (req.models.Tripler.phone.unique) {
-      if (await req.neode.first('Tripler', 'phone', normalize(req.body.phone))) {
-        return error(400, res, "That phone number is already in use.");
-      }
-    }
-
-    if (req.body.email) {
-      if (!validateEmail(req.body.email)) return _400(res, "Invalid email");
-
-      if (req.models.Tripler.email.unique) {
-        let existing_tripler = await req.neode.first('Tripler', 'email', req.body.email);
-        if(existing_tripler) {
-          return error(400, res, "Tripler with this email already exists");
-        }
-      }
-    }
-
-    let coordinates = await geoCode(req.body.address);
-    if (coordinates === null) {
-      return error(400, res, "Invalid address, tripler cannot be created");
+    let coordinates, address;
+    try {
+      await assertUserPhoneAndEmail('Tripler', req.body.phone, req.body.email);
+      [coordinates, address] = await getValidCoordinates(req.body.address);
+    } catch (err) {
+      return error(400, res, err.message, req.body);
     }
 
     const obj = {
@@ -63,11 +50,11 @@ async function createTripler(req, res) {
       last_name: req.body.last_name || null,
       phone: normalize(req.body.phone),
       email: req.body.email || null,
-      address: JSON.stringify(req.body.address, null, 2),
+      address: JSON.stringify(address, null, 2),
       triplees: !req.body.triplees ? null : JSON.stringify(req.body.triplees, null, 2),
       location: {
-        latitude: parseFloat(coordinates.latitude, 10),
-        longitude: parseFloat(coordinates.longitude, 10)
+        latitude: parseFloat(coordinates.latitude),
+        longitude: parseFloat(coordinates.longitude)
       },
       status: 'unconfirmed'
     }
@@ -122,58 +109,22 @@ async function fetchTripler(req, res) {
 }
 
 async function updateTripler(req, res) {
-  let found = null;
-  found = await req.neode.first('Tripler', 'id', req.params.triplerId);
-  if (!found) return error(404, res, "Tripler not found");
-
-  if (req.body.phone) {
-    if (!validatePhone(req.body.phone)) {
-      return error(400, res, "Our system doesn’t recognize that phone number. Cannot update tripler. Please try again.");
-    }
-
-    let existing_tripler = await req.neode.first('Tripler', 'phone', normalize(req.body.phone));
-    if(existing_tripler && existing_tripler.get('id') !== found.get('id')) {
-      return error(400, res, "That phone number is already in use.");
-    }
+  let found = await req.neode.first('Tripler', 'id', req.params.triplerId);
+  if (!found) {
+    return error(404, res, "Tripler not found");
   }
 
-  if (req.body.email) {
-    if (!validateEmail(req.body.email)) return _400(res, "Invalid email");
-
-    if (req.models.Tripler.email.unique) {
-      let existing_tripler = await req.neode.first('Tripler', 'email', req.body.email);
-      if(existing_tripler && existing_tripler.get('id') !== found.get('id')) {
-        return error(400, res, "Tripler with this email already exists");
-      }
-    }
+  try {
+    await assertUserPhoneAndEmail('Tripler', req.body.phone, req.body.email, found.get('id'));
+  } catch (err) {
+    return error(400, res, err.message, req.body);
   }
 
-  let whitelistedAttrs = ['first_name', 'last_name', 'date_of_birth', 'email', 'status'];
-
-  let json = {};
-  for (let prop in req.body) {
-    if (whitelistedAttrs.indexOf(prop) !== -1) {
-      json[prop] = req.body[prop];
-    }
-  }
-
-  if (req.body.phone) {
-    json.phone = normalize(req.body.phone);
-  }
-
-  if (req.body.address) {
-    let coordinates = await geoCode(req.body.address);
-    if (coordinates === null) {
-      return error(400, res, "Invalid address, tripler cannot be updated");
-    }
-    json.address = JSON.stringify(req.body.address, null, 2);
-    json.location = new neo4j.types.Point(4326, // WGS 84 2D
-                                           parseFloat(coordinates.longitude, 10),
-                                           parseFloat(coordinates.latitude, 10));
-  }
-
-  if (req.body.triplees) {
-    json.triplees = JSON.stringify(req.body.triplees, null, 2);
+  let json;
+  try {
+    json = await getUserJsonFromRequest(req.body);
+  } catch (err) {
+    return error(400, res, err.message);
   }
 
   let updated = await found.update(json);
