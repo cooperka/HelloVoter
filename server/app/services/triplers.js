@@ -15,6 +15,7 @@ import {
   serializeTriplee,
   serializeTripleeForCSV,
 } from "../routes/api/v1/va/serializers";
+import { normalizePhone } from '../lib/normalizers';
 
 async function findById(triplerId) {
   return await neode.first("Tripler", "id", triplerId);
@@ -376,7 +377,6 @@ function buildTriplerSearchQuery(req) {
 
   // TODO: Use parameter isolation for security.
   return `
-
     match (a:Ambassador {id: "${req.user.get('id')}"})
     with a.location as a_location, apoc.convert.fromJsonMap(a.address) as address
     ${triplerQuery}
