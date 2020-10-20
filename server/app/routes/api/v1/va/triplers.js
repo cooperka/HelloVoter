@@ -191,31 +191,12 @@ async function startTriplerConfirmation(req, res) {
     return error(400, res, "Invalid status, cannot proceed to begin tripler confirmation.", { ambassador: serializeAmbassador(ambassador), tripler: serializeTripler(tripler), verification: verification });
   }
 
-  let triplerPhone = req.body.phone ? normalize(req.body.phone): tripler.get('phone');
+  let triplerPhone = req.body.phone ? normalizePhone(req.body.phone): tripler.get('phone');
 
-  // check against Twilio caller ID and Ekata data
-  let twilioCallerId = await caller_id(triplerPhone);
-  let ekataReversePhone = await reverse_phone(triplerPhone);
-  let verification = [];
-  if (twilioCallerId) {
-    try {
-      verification.push({
-        source: 'Twilio',
-        name: twilioCallerId
-      })
-    } catch (err) {
-      logger.error("Could not get verification info for tripler: %s", err);
-    }
-  }
-  if (ekataReversePhone) {
-    try {
-      verification.push({
-        source: 'Ekata',
-        name: ekataReversePhone.addOns.results.ekata_reverse_phone
-      })
-    } catch (err) {
-      logger.error("Could not get verification info for tripler: %s", err);
-    }
+  const verifications = await verifyCallerIdAndReversePhone(triplerPhone);
+
+  if (tripler.get('status') !== 'unconfirmed') {
+    return error(400, res, "Invalid status, cannot proceed to begin tripler confirmation.", { ambassador: serializeAmbassador(ambassador), tripler: serializeTripler(tripler), verification: verifications });
   }
 
   if (triplerPhone) {

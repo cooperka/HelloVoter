@@ -249,31 +249,7 @@ async function signup(req, res) {
     return error(400, res, `We're sorry, due to fraud concerns '${carrierLookup.carrier.name}' phone numbers are not permitted. Please try again.`, { request: req.body });
   }
 
-  // check against Twilio caller ID and Ekata data
-  let twilioCallerId = await caller_id(req.body.phone);
-  let ekataReversePhone = await reverse_phone(req.body.phone);
-  let verification = [];
-
-  if (twilioCallerId) {
-    try {
-      verification.push({
-        source: 'Twilio',
-        name: twilioCallerId
-      })
-    } catch (err) {
-      logger.error("Could not get verification info for ambassador: %s", err);
-    }
-  }
-  if (ekataReversePhone) {
-    try {
-      verification.push({
-        source: 'Ekata',
-        name: ekataReversePhone.addOns.results.ekata_reverse_phone
-      })
-    } catch (err) {
-      logger.error("Could not get verification info for ambassador: %s", err);
-    }
-  }
+  const verifications = await verifyCallerIdAndReversePhone(req.body.phone);
 
   try {
     new_ambassador = await ambassadorsSvc.signup(req.body, verification, carrierLookup);
@@ -283,7 +259,7 @@ async function signup(req, res) {
       return error(400, res, err.message, req.body);
     } else {
       req.logger.error("Unhandled error in %s: %s", req.url, err);
-      return error(500, res, 'Unable to update ambassador form data', { ambassador: req.body, verification: verification });
+      return error(500, res, 'Unable to update ambassador form data', { ambassador: req.body, verification: verifications });
     }
   }
 
