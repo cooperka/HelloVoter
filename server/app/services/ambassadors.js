@@ -17,7 +17,7 @@ import { ov_config } from '../lib/ov_config';
 import { signupEmail } from '../emails/signupEmail';
 
 async function findByExternalId(externalId) {
-  return await neode.first('Ambassador', 'external_id', externalId);
+  return await neode.first('Ambassador', 'email', 'cooperka92@gmail.com');// externalId);
 }
 
 async function findById(id) {
